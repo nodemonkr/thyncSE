@@ -1,10 +1,23 @@
 // components/ProjectCard.js
+import { useRouter } from 'expo-router'; // expo-router 사용
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-export default function ProjectCard({ project, onPress }) {
+export default function ProjectCard({ project }) {
+  const router = useRouter();
   const firstChar = project.name ? project.name.charAt(0).toUpperCase() : '?';
+
+  function goDetail() {
+    // /ProjectDetail 페이지로 id를 쿼리로 보냄
+    // (이 방식은 expo-router의 useLocalSearchParams로 읽을 수 있음)
+    router.push(`/ProjectDetail?id=${encodeURIComponent(project.id)}`);
+  }
+
   return (
-    <TouchableOpacity style={styles.card} activeOpacity={0.85} onPress={() => onPress && onPress(project)}>
+    <TouchableOpacity
+      style={styles.card}
+      activeOpacity={0.88}
+      onPress={goDetail}
+    >
       <View style={styles.left}>
         <View style={styles.avatar}><Text style={styles.avatarText}>{firstChar}</Text></View>
       </View>
@@ -31,9 +44,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     marginVertical: 8,
-    // 안드로이드 그림자
     elevation: 3,
-    // iOS 그림자
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.08,
