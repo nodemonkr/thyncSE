@@ -1,34 +1,53 @@
 // hooks/useProjects.js
-import { useState, useEffect } from 'react';
-import { useApi } from '../contexts/ApiProvider';
+import { useCallback, useEffect, useState } from 'react';
+import * as api from '../lib/api/mockProjectsApi';
 
 export default function useProjects() {
-  const api = useApi();
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  async function load(){
+  const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await api.fetchProjects();
-    setLoading(false);
-    if (error) { console.warn('load projects error', error); return { error }; }
-    setProjects(data || []);
-    return { data };
-  }
+    try {
+      const data = await api.fetchProjects();
+      setProjects(data);
+    } catch (e) {
+      console.warn('load projects failed', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  async function create(payload){
-    const { data, error } = await api.createProject(payload);
-    if (!error) setProjects(prev => [data, ...prev]);
-    return { data, error };
-  }
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  async function update(item){
-    const { data, error } = await api.updateProject(item);
-    if (!error) setProjects(prev => prev.map(p => p.id === data.id ? data : p));
-    return { data, error };
-  }
+  const create = useCallback(async (payload) => {
+    // payload: { name, ... }
+    const created = await api.createProject(payload);
+    // state 갱신 (가장 위에 추가)
+    setProjects(prev => [created, ...prev]);
+    return created;
+  }, []);
 
-  useEffect(()=>{ load(); }, []);
+  const update = useCallback(async (id, patch) => {
+    const updated = await api.updateProject(id, patch);
+    setProjects(prev => prev.map(p => (p.id === id ? updated : p)));
+    return updated;
+  }, []);
 
-  return { projects, loading, load, create, update };
+  const remove = useCallback(async (id) => {
+    await api.deleteProject(id);
+    setProjects(prev => prev.filter(p => p.id !== id));
+    return true;
+  }, []);
+
+  return {
+    projects,
+    loading,
+    load,
+    create,
+    update,
+    remove,
+  };
 }
