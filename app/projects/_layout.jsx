@@ -1,7 +1,7 @@
 // app/projects/_layout.jsx
-import { Stack } from "expo-router";
+import { Stack } from 'expo-router';
 
 export default function ProjectsLayout() {
-  // 빈 Stack 반환: 각 페이지에서 제목을 직접 설정하도록 변경 (더 안전)
+  // headerShown: false 로 하면 각 화면이 자체적으로 제목(헤더)을 가질 수 있습니다.
   return <Stack screenOptions={{ headerShown: false }} />;
 }

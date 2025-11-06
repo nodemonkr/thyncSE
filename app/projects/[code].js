@@ -1,63 +1,227 @@
 // app/projects/[code].js
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    InteractionManager,
+    SectionList, StyleSheet,
+    Text, TextInput, TouchableOpacity,
+    View
+} from 'react-native';
 
 const LOCAL_KEY = '@thync_projects_v1';
 
-function defaultMaterials() {
-  return {
-    switch: { ubiq_8:0, ubiq_24:0, ubiq_48:0, cisco_8:0, cisco_24:0, cisco_48:0 },
-    dashboard: { dash_65:0, dash_50:0, dash_43:0, bracket_440F_ceiling:0, bracket_6400F_wall:0 },
-    monitor: { monitor_27:0, monitor_24:0 },
-    hubrack: { hubrack_300:0, hubrack_750:0, highbox:0 },
-    serverrack: { serverrack_750:0, serverrack_1800:0 },
-    server: { r450_1u:0, r760_2u:0 },
-    others: { wireless_kb_mouse:0, hdmi_5m:0, hdmi_30m:0, dp_to_hdmi:0, rtx3060:0 }
-  };
-}
+// MATERIAL_DEFINITION (요청하신 전체 항목)
+const MATERIAL_DEFINITION = {
+  switch: [
+    { key: 'ubiq_8', label: '유비쿼스 8포트' },
+    { key: 'ubiq_24', label: '유비쿼스 24포트' },
+    { key: 'ubiq_48', label: '유비쿼스 48포트' },
+    { key: 'cisco_8', label: '시스코 8포트' },
+    { key: 'cisco_24', label: '시스코 24포트' },
+    { key: 'cisco_48', label: '시스코 48포트' }
+  ],
+  dashboard: [
+    { key: 'dash_65', label: '65인치 대시보드' },
+    { key: 'dash_50', label: '50인치 대시보드' },
+    { key: 'dash_43', label: '43인치 대시보드' },
+    { key: 'bracket_440F_ceiling', label: '440F 천장형브라켓' },
+    { key: 'bracket_6400F_wall', label: '6400F 벽걸이형브라켓' }
+  ],
+  monitor: [
+    { key: 'monitor_27', label: '27인치 모니터' },
+    { key: 'monitor_24', label: '24인치 모니터' }
+  ],
+  hubrack: [
+    { key: 'hubrack_300', label: '300사이즈 허브랙' },
+    { key: 'hubrack_750', label: '750사이즈 허브랙' },
+    { key: 'highbox', label: '하이박스' }
+  ],
+  serverrack: [
+    { key: 'serverrack_750', label: '750 서버랙' },
+    { key: 'serverrack_1800', label: '1800 서버랙' }
+  ],
+  server: [
+    { key: 'r450_1u', label: 'R450 1U서버' },
+    { key: 'r760_2u', label: 'R760 2U서버' }
+  ],
+  desktop: [
+    { key: 'dm501tga', label: 'DM501TGA-ZR712' },
+    { key: 'nuc', label: 'NUC 미니PC' }
+  ],
+  others: [
+    { key: 'wireless_kb_mouse', label: '무선 마우스키보드세트' },
+    { key: 'hdmi_5m', label: 'HDMI 5M선' },
+    { key: 'hdmi_30m', label: 'HDMI 30M선' },
+    { key: 'dp_to_hdmi', label: 'DP to HDMI젠더' },
+    { key: 'rtx3060', label: 'RTX3060그래픽카드' }
+  ]
+};
+
+// static default materials 생성 (최초에만)
+const DEFAULT_MATERIALS = (() => {
+  const out = {};
+  Object.keys(MATERIAL_DEFINITION).forEach(cat => {
+    out[cat] = {};
+    MATERIAL_DEFINITION[cat].forEach(it => { out[cat][it.key] = 0; });
+  });
+  return out;
+})();
+
+// helper: deep merge existing into default
+const mergeMaterials = (base, existing) => {
+  const merged = {};
+  Object.keys(base).forEach(cat => {
+    merged[cat] = { ...base[cat], ...(existing && existing[cat] ? existing[cat] : {}) };
+    Object.keys(merged[cat]).forEach(k => { merged[cat][k] = Number(merged[cat][k] || 0); });
+  });
+  return merged;
+};
+
+/* MaterialItem: 각 행을 로컬 상태로 관리하여 부모 재렌더 최소화
+   - value: 부모가 가진 최신 값
+   - onCommit(value): blur 시 부모에 업데이트
+   - onDelta(delta): +/- 버튼은 즉시 부모에 알림 (작은 빈도)
+*/
+const MaterialItem = React.memo(function MaterialItem({ cat, item, value, onCommit, onDelta }) {
+  const [local, setLocal] = useState(String(value ?? 0));
+
+  // 외부 value가 바뀌면 로컬 동기화 (하지만 typing 중에는 덮어씌우지 않도록)
+  useEffect(() => {
+    // only update if different and not focused; for simplicity always sync when parent changes and differs
+    if (String(value) !== local) setLocal(String(value ?? 0));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  return (
+    <View style={styles.itemRow}>
+      <Text style={styles.itemLabel}>{item.label}</Text>
+      <View style={styles.controlWrap}>
+        <TouchableOpacity style={styles.stepBtn} onPress={() => onDelta(cat, item.key, -1)}>
+          <Text style={styles.stepBtnText}>−</Text>
+        </TouchableOpacity>
+
+        <TextInput
+          value={local}
+          keyboardType="numeric"
+          onChangeText={(t) => setLocal(t.replace(/[^0-9]/g, ''))}
+          onBlur={() => {
+            const num = Number(local) || 0;
+            if (num !== value) onCommit(cat, item.key, num);
+          }}
+          style={styles.input}
+          returnKeyType="done"
+        />
+
+        <TouchableOpacity style={styles.stepBtn} onPress={() => onDelta(cat, item.key, 1)}>
+          <Text style={styles.stepBtnText}>＋</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+});
+
+// SectionCard: 각 카테고리 헤더 (메모이즈)
+const SectionCardHeader = React.memo(function SectionCardHeader({ title, total }) {
+  return (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionBadge}><Text style={styles.sectionBadgeText}>{total}</Text></View>
+    </View>
+  );
+});
 
 export default function ProjectDetail() {
-  const { code } = useSearchParams(); // expo-router: URL param name matches [code]
   const router = useRouter();
+  const mountedRef = useRef(true);
+
+  // params safe read
+  let params = {};
+  try {
+    const mod = require('expo-router');
+    const useLocalSearchParams = mod && mod.useLocalSearchParams;
+    const useSearchParams = mod && mod.useSearchParams;
+    if (typeof useLocalSearchParams === 'function') params = useLocalSearchParams() || {};
+    else if (typeof useSearchParams === 'function') params = useSearchParams() || {};
+    else params = (router && router.params) ? router.params : {};
+  } catch (e) {
+    params = (router && router.params) ? router.params : {};
+  }
+  const { code } = params;
+
   const [loading, setLoading] = useState(true);
-
-  // project fields
   const [project, setProject] = useState(null);
-  const [materials, setMaterials] = useState(defaultMaterials());
+  const [materials, setMaterials] = useState(DEFAULT_MATERIALS);
 
-  useEffect(() => {
-    load();
+  // sections for SectionList (memoized)
+  const sections = useMemo(() => {
+    return Object.keys(MATERIAL_DEFINITION).map(cat => ({
+      title: cat,
+      data: MATERIAL_DEFINITION[cat]
+    }));
   }, []);
 
-  const load = async () => {
-    try {
-      const raw = await AsyncStorage.getItem(LOCAL_KEY);
-      const arr = raw ? JSON.parse(raw) : [];
-      const found = arr.find(p => p.code === code);
-      if (!found) {
-        Alert.alert('오류', '해당 프로젝트를 찾을 수 없습니다.');
+  // load only AFTER interactions to avoid blocking navigation transition
+  useEffect(() => {
+    mountedRef.current = true;
+    let task;
+    task = InteractionManager.runAfterInteractions(async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LOCAL_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        const found = arr.find(p => p.code === code);
+        if (!found) {
+          Alert.alert('오류', '해당 프로젝트를 찾을 수 없습니다.');
+          router.back();
+          return;
+        }
+        if (!mountedRef.current) return;
+        setProject(found);
+        setMaterials(prev => mergeMaterials(DEFAULT_MATERIALS, found.materials || {}));
+      } catch (e) {
+        console.error('load err', e);
+        Alert.alert('로컬 데이터 로드 실패');
         router.back();
-        return;
+      } finally {
+        if (mountedRef.current) setLoading(false);
       }
-      setProject(found);
-      setMaterials(found.materials || defaultMaterials());
-    } catch (e) {
-      console.error('load project err', e);
-      Alert.alert('오류', '로컬 데이터 로드 실패');
-      router.back();
-    } finally {
-      setLoading(false);
-    }
-  };
+    });
+    return () => {
+      mountedRef.current = false;
+      if (task && typeof task.cancel === 'function') task.cancel();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
-  const save = async () => {
+  // stable callbacks
+  const commitMaterial = useCallback((cat, key, value) => {
+    setMaterials(prev => {
+      const next = { ...prev, [cat]: { ...prev[cat], [key]: Number(value) || 0 } };
+      return next;
+    });
+  }, []);
+
+  const deltaMaterial = useCallback((cat, key, delta) => {
+    setMaterials(prev => {
+      const cur = Number(prev[cat]?.[key] || 0);
+      const nextVal = Math.max(0, cur + delta);
+      return { ...prev, [cat]: { ...prev[cat], [key]: nextVal } };
+    });
+  }, []);
+
+  const categoryTotal = useCallback((cat) => {
+    return Object.values(materials[cat] || {}).reduce((s, v) => s + Number(v || 0), 0);
+  }, [materials]);
+
+  const save = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(LOCAL_KEY);
       const arr = raw ? JSON.parse(raw) : [];
       const idx = arr.findIndex(p => p.code === code);
       if (idx === -1) {
-        Alert.alert('오류', '저장 대상 프로젝트를 찾을 수 없습니다.');
+        Alert.alert('오류', '저장 대상 프로젝트가 없습니다.');
         return;
       }
       const updated = {
@@ -71,120 +235,112 @@ export default function ProjectDetail() {
       };
       arr[idx] = updated;
       await AsyncStorage.setItem(LOCAL_KEY, JSON.stringify(arr));
-      Alert.alert('저장 완료', '로컬에 저장했습니다.');
+      Alert.alert('저장 완료', '로컬에 저장되었습니다.');
       router.back();
     } catch (e) {
       console.error('save err', e);
-      Alert.alert('저장 실패', '저장 중 오류가 발생했습니다.');
+      Alert.alert('저장 실패');
     }
-  };
+  }, [code, materials, project, router]);
 
-  const setMaterialValue = (cat, key, value) => {
-    setMaterials(prev => ({ ...prev, [cat]: { ...prev[cat], [key]: Number(value) || 0 } }));
-  };
-  const changeMaterialBy = (cat, key, delta) => {
-    setMaterials(prev => {
-      const cur = Number(prev[cat]?.[key] ?? 0);
-      const next = Math.max(0, cur + delta);
-      return { ...prev, [cat]: { ...prev[cat], [key]: next } };
-    });
-  };
-
-  const renderNumberInput = (label, value, onChange, onInc, onDec) => (
-    <View style={styles.row} key={label}>
-      <Text style={styles.label}>{label}</Text>
-      <View style={styles.counterWrap}>
-        <TouchableOpacity style={styles.stepBtn} onPress={onDec}><Text>-</Text></TouchableOpacity>
-        <TextInput value={String(value)} keyboardType="numeric" onChangeText={text => onChange(text.replace(/[^0-9]/g, ''))} style={styles.input} />
-        <TouchableOpacity style={styles.stepBtn} onPress={onInc}><Text>+</Text></TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  if (loading || !project) return (
-    <View style={{flex:1,justifyContent:'center',alignItems:'center'}}><Text>불러오는 중...</Text></View>
-  );
+  if (loading || !project) {
+    return (
+      <View style={styles.center}><ActivityIndicator size="small" /><Text style={{marginTop:8}}>불러오는 중...</Text></View>
+    );
+  }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 16 }}>
-      <Text style={styles.title}>프로젝트 상세</Text>
-
-      <Text style={styles.sectionTitle}>기본 정보</Text>
-      <View style={styles.row}>
-        <Text style={styles.label}>병원명</Text>
-        <TextInput style={styles.inputFull} value={project.name} onChangeText={t => setProject({...project, name: t})} />
+    <View style={styles.container}>
+      <View style={styles.headerRow}>
+        <Text style={styles.title}>프로젝트 상세</Text>
+        <TouchableOpacity style={styles.saveBtnSmall} onPress={save}><Text style={styles.saveTextSmall}>저장</Text></TouchableOpacity>
       </View>
 
-      {renderNumberInput('병동수', project.wards, v => setProject({...project, wards: v}), () => setProject(p => ({...p, wards: Number(p.wards||0)+1})), () => setProject(p => ({...p, wards: Math.max(0, Number(p.wards||0)-1)})))}
-      {renderNumberInput('병상수', project.beds, v => setProject({...project, beds: v}), () => setProject(p => ({...p, beds: Number(p.beds||0)+1})), () => setProject(p => ({...p, beds: Math.max(0, Number(p.beds||0)-1)})))}
-      {renderNumberInput('게이트웨이수', project.gateways, v => setProject({...project, gateways: v}), () => setProject(p => ({...p, gateways: Number(p.gateways||0)+1})), () => setProject(p => ({...p, gateways: Math.max(0, Number(p.gateways||0)-1)})))}
+      <View style={styles.infoRow}>
+        <Text style={styles.infoLabel}>병원명</Text>
+        <TextInput style={styles.infoInput} value={project.name} onChangeText={(t) => setProject(p => ({...p, name: t}))} />
+      </View>
 
-      <Text style={styles.sectionTitle}>납품 자재</Text>
+      <View style={styles.statsRow}>
+        <View style={styles.stat}>
+          <Text style={styles.statLabel}>병동</Text>
+          <TextInput style={styles.statInput} keyboardType="numeric" value={String(project.wards ?? 0)} onChangeText={t => setProject(p => ({...p, wards: t.replace(/[^0-9]/g,'')}))} />
+        </View>
+        <View style={styles.stat}>
+          <Text style={styles.statLabel}>병상</Text>
+          <TextInput style={styles.statInput} keyboardType="numeric" value={String(project.beds ?? 0)} onChangeText={t => setProject(p => ({...p, beds: t.replace(/[^0-9]/g,'')}))} />
+        </View>
+        <View style={styles.stat}>
+          <Text style={styles.statLabel}>게이트웨이</Text>
+          <TextInput style={styles.statInput} keyboardType="numeric" value={String(project.gateways ?? 0)} onChangeText={t => setProject(p => ({...p, gateways: t.replace(/[^0-9]/g,'')}))} />
+        </View>
+      </View>
 
-      {/* 스위치 */}
-      <Text style={styles.subSection}>[스위치]</Text>
-      {renderNumberInput('유비쿼스 8포트 수량', materials.switch.ubiq_8, v => setMaterialValue('switch','ubiq_8',v), () => changeMaterialBy('switch','ubiq_8',1), () => changeMaterialBy('switch','ubiq_8',-1))}
-      {renderNumberInput('유비쿼스 24포트 수량', materials.switch.ubiq_24, v => setMaterialValue('switch','ubiq_24',v), () => changeMaterialBy('switch','ubiq_24',1), () => changeMaterialBy('switch','ubiq_24',-1))}
-      {renderNumberInput('유비쿼스 48포트 수량', materials.switch.ubiq_48, v => setMaterialValue('switch','ubiq_48',v), () => changeMaterialBy('switch','ubiq_48',1), () => changeMaterialBy('switch','ubiq_48',-1))}
-      {renderNumberInput('시스코 8포트 수량', materials.switch.cisco_8, v => setMaterialValue('switch','cisco_8',v), () => changeMaterialBy('switch','cisco_8',1), () => changeMaterialBy('switch','cisco_8',-1))}
-      {renderNumberInput('시스코 24포트 수량', materials.switch.cisco_24, v => setMaterialValue('switch','cisco_24',v), () => changeMaterialBy('switch','cisco_24',1), () => changeMaterialBy('switch','cisco_24',-1))}
-      {renderNumberInput('시스코 48포트 수량', materials.switch.cisco_48, v => setMaterialValue('switch','cisco_48',v), () => changeMaterialBy('switch','cisco_48',1), () => changeMaterialBy('switch','cisco_48',-1))}
+      <Text style={styles.sectionMainTitle}>납품 자재</Text>
 
-      {/* 대시보드 */}
-      <Text style={styles.subSection}>[대시보드]</Text>
-      {renderNumberInput('65인치 대시보드 수량', materials.dashboard.dash_65, v => setMaterialValue('dashboard','dash_65',v), () => changeMaterialBy('dashboard','dash_65',1), () => changeMaterialBy('dashboard','dash_65',-1))}
-      {renderNumberInput('50인치 대시보드 수량', materials.dashboard.dash_50, v => setMaterialValue('dashboard','dash_50',v), () => changeMaterialBy('dashboard','dash_50',1), () => changeMaterialBy('dashboard','dash_50',-1))}
-      {renderNumberInput('43인치 대시보드 수량', materials.dashboard.dash_43, v => setMaterialValue('dashboard','dash_43',v), () => changeMaterialBy('dashboard','dash_43',1), () => changeMaterialBy('dashboard','dash_43',-1))}
-      {renderNumberInput('440F 천장형브라켓 수량', materials.dashboard.bracket_440F_ceiling, v => setMaterialValue('dashboard','bracket_440F_ceiling',v), () => changeMaterialBy('dashboard','bracket_440F_ceiling',1), () => changeMaterialBy('dashboard','bracket_440F_ceiling',-1))}
-      {renderNumberInput('6400F 벽걸이형브라켓 수량', materials.dashboard.bracket_6400F_wall, v => setMaterialValue('dashboard','bracket_6400F_wall',v), () => changeMaterialBy('dashboard','bracket_6400F_wall',1), () => changeMaterialBy('dashboard','bracket_6400F_wall',-1))}
+      <SectionList
+        sections={sections.map(s => ({ ...s, title: s.title }))}
+        keyExtractor={(item) => item.key}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.sectionCard}>
+            <SectionCardHeader title={section.title} total={categoryTotal(section.title)} />
+          </View>
+        )}
+        renderItem={({ item, section }) => (
+          <MaterialItem
+            cat={section.title}
+            item={item}
+            value={materials[section.title]?.[item.key] ?? 0}
+            onCommit={commitMaterial}
+            onDelta={deltaMaterial}
+          />
+        )}
+        stickySectionHeadersEnabled={false}
+        contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
+      />
 
-      {/* 모니터 */}
-      <Text style={styles.subSection}>[모니터]</Text>
-      {renderNumberInput('27인치 모니터 수량', materials.monitor.monitor_27, v => setMaterialValue('monitor','monitor_27',v), () => changeMaterialBy('monitor','monitor_27',1), () => changeMaterialBy('monitor','monitor_27',-1))}
-      {renderNumberInput('24인치 모니터 수량', materials.monitor.monitor_24, v => setMaterialValue('monitor','monitor_24',v), () => changeMaterialBy('monitor','monitor_24',1), () => changeMaterialBy('monitor','monitor_24',-1))}
-
-      {/* 허브랙 */}
-      <Text style={styles.subSection}>[허브랙]</Text>
-      {renderNumberInput('300사이즈 허브랙 수량', materials.hubrack.hubrack_300, v => setMaterialValue('hubrack','hubrack_300',v), () => changeMaterialBy('hubrack','hubrack_300',1), () => changeMaterialBy('hubrack','hubrack_300',-1))}
-      {renderNumberInput('750사이즈 허브랙 수량', materials.hubrack.hubrack_750, v => setMaterialValue('hubrack','hubrack_750',v), () => changeMaterialBy('hubrack','hubrack_750',1), () => changeMaterialBy('hubrack','hubrack_750',-1))}
-      {renderNumberInput('하이박스 수량', materials.hubrack.highbox, v => setMaterialValue('hubrack','highbox',v), () => changeMaterialBy('hubrack','highbox',1), () => changeMaterialBy('hubrack','highbox',-1))}
-
-      {/* 서버랙 */}
-      <Text style={styles.subSection}>[서버랙]</Text>
-      {renderNumberInput('750 서버랙 수량', materials.serverrack.serverrack_750, v => setMaterialValue('serverrack','serverrack_750',v), () => changeMaterialBy('serverrack','serverrack_750',1), () => changeMaterialBy('serverrack','serverrack_750',-1))}
-      {renderNumberInput('1800 서버랙 수량', materials.serverrack.serverrack_1800, v => setMaterialValue('serverrack','serverrack_1800',v), () => changeMaterialBy('serverrack','serverrack_1800',1), () => changeMaterialBy('serverrack','serverrack_1800',-1))}
-
-      {/* 서버 */}
-      <Text style={styles.subSection}>[서버]</Text>
-      {renderNumberInput('R450 1U서버 수량', materials.server.r450_1u, v => setMaterialValue('server','r450_1u',v), () => changeMaterialBy('server','r450_1u',1), () => changeMaterialBy('server','r450_1u',-1))}
-      {renderNumberInput('R760 2U서버 수량', materials.server.r760_2u, v => setMaterialValue('server','r760_2u',v), () => changeMaterialBy('server','r760_2u',1), () => changeMaterialBy('server','r760_2u',-1))}
-
-      {/* 기타자재 */}
-      <Text style={styles.subSection}>[기타자재]</Text>
-      {renderNumberInput('무선 마우스키보드세트 수량', materials.others.wireless_kb_mouse, v => setMaterialValue('others','wireless_kb_mouse',v), () => changeMaterialBy('others','wireless_kb_mouse',1), () => changeMaterialBy('others','wireless_kb_mouse',-1))}
-      {renderNumberInput('HDMI 5M선 수량', materials.others.hdmi_5m, v => setMaterialValue('others','hdmi_5m',v), () => changeMaterialBy('others','hdmi_5m',1), () => changeMaterialBy('others','hdmi_5m',-1))}
-      {renderNumberInput('HDMI 30M선 수량', materials.others.hdmi_30m, v => setMaterialValue('others','hdmi_30m',v), () => changeMaterialBy('others','hdmi_30m',1), () => changeMaterialBy('others','hdmi_30m',-1))}
-      {renderNumberInput('DP to HDMI젠더 수량', materials.others.dp_to_hdmi, v => setMaterialValue('others','dp_to_hdmi',v), () => changeMaterialBy('others','dp_to_hdmi',1), () => changeMaterialBy('others','dp_to_hdmi',-1))}
-      {renderNumberInput('RTX3060그래픽카드 수량', materials.others.rtx3060, v => setMaterialValue('others','rtx3060',v), () => changeMaterialBy('others','rtx3060',1), () => changeMaterialBy('others','rtx3060',-1))}
-
-      <View style={{height:20}} />
-      <TouchableOpacity style={styles.saveBtn} onPress={save}><Text style={styles.saveText}>저장하기</Text></TouchableOpacity>
-      <View style={{height:40}} />
-    </ScrollView>
+    </View>
   );
 }
 
+const ACCENT = '#1976d2';
+const CARD_BG = '#fafafa';
+const BORDER = '#e6e6e6';
+const BADGE_BG = '#eaf2ff';
+
 const styles = StyleSheet.create({
-  container:{flex:1, backgroundColor:'#fff'},
-  title:{fontSize:20,fontWeight:'700',marginBottom:12},
-  sectionTitle:{fontSize:16,fontWeight:'700',marginTop:12,marginBottom:8},
-  subSection:{fontSize:14,fontWeight:'600',marginTop:10,marginBottom:6},
-  row:{flexDirection:'row',alignItems:'center',marginBottom:10},
-  label:{width:170},
-  input:{minWidth:60,padding:8,borderWidth:1,borderColor:'#ddd',borderRadius:6,textAlign:'center'},
-  inputFull:{flex:1,padding:8,borderWidth:1,borderColor:'#ddd',borderRadius:6},
-  counterWrap:{flexDirection:'row',alignItems:'center'},
-  stepBtn:{padding:8,borderWidth:1,borderColor:'#ddd',borderRadius:6,marginHorizontal:6},
-  saveBtn:{backgroundColor:'#1976d2',paddingVertical:12,borderRadius:8,alignItems:'center'},
-  saveText:{color:'#fff',fontWeight:'700'},
+  container: { flex: 1, backgroundColor: '#fff' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16 },
+  title: { fontSize: 20, fontWeight: '800' },
+  saveBtnSmall: { backgroundColor: ACCENT, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
+  saveTextSmall: { color: '#fff', fontWeight: '700' },
+
+  infoRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 },
+  infoLabel: { width: 80, fontWeight: '700' },
+  infoInput: { flex: 1, padding: 10, borderWidth: 1, borderColor: BORDER, borderRadius: 8 },
+
+  statsRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, marginBottom: 12 },
+  stat: { width: '32%' },
+  statLabel: { color: '#444', marginBottom: 6 },
+  statInput: { borderWidth: 1, borderColor: BORDER, padding: 8, borderRadius: 8, textAlign: 'center' },
+
+  sectionMainTitle: { fontSize: 16, fontWeight: '800', paddingHorizontal: 16, marginTop: 8, marginBottom: 8 },
+
+  sectionCard: { backgroundColor: CARD_BG, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: BORDER, marginBottom: 8 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  sectionTitle: { fontSize: 15, fontWeight: '800' },
+  sectionBadge: { backgroundColor: BADGE_BG, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  sectionBadgeText: { fontWeight: '700', color: ACCENT },
+
+  itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderColor: '#f0f0f0' },
+  itemLabel: { flex: 1, fontSize: 14, color: '#222' },
+  controlWrap: { flexDirection: 'row', alignItems: 'center' },
+  stepBtn: { width: 40, height: 40, borderRadius: 8, borderWidth: 1, borderColor: BORDER, justifyContent: 'center', alignItems: 'center', marginHorizontal: 8, backgroundColor: '#fff' },
+  stepBtnText: { fontSize: 20, fontWeight: '700' },
+  input: { width: 70, padding: 8, borderWidth: 1, borderColor: BORDER, borderRadius: 8, textAlign: 'center', backgroundColor: '#fff' },
+
+  saveBtn: { backgroundColor: ACCENT, paddingVertical: 14, borderRadius: 10, alignItems: 'center', margin: 16 },
+  saveText: { color: '#fff', fontWeight: '800', fontSize: 16 }
 });

@@ -1,208 +1,166 @@
 // components/CustomDrawerContent.js
-import { Entypo, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '../lib/api/supabaseClient'; // 경로 확인
+import { useEffect, useState } from 'react';
+import { Alert, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-export default function CustomDrawerContent({ state, navigation }) {
+// 색상
+const ORANGE = '#ff7a18';
+const INACTIVE = '#7a7a7a';
+
+// 메뉴 정의 (projects/index 대신 path '/projects'로 이동)
+const NAV_ITEMS = [
+  { key: 'index', label: '홈', icon: (c,s) => <Ionicons name="home" size={s} color={c} />, path: '/' },
+  { key: 'projects', label: '프로젝트', icon: (c,s) => <MaterialCommunityIcons name="folder-network" size={s} color={c} />, path: '/projects' },
+  { key: 'inventory', label: '재고관리', icon: (c,s) => <Ionicons name="cube" size={s} color={c} />, path: '/inventory' },
+  { key: 'profile', label: '내정보', icon: (c,s) => <Ionicons name="person" size={s} color={c} />, path: '/profile' },
+  { key: 'settings', label: '설정', icon: (c,s) => <Ionicons name="settings" size={s} color={c} />, path: '/settings' },
+];
+
+export default function CustomDrawerContent(props) {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
-
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [avatarUri, setAvatarUri] = useState(null);
+  const [pathname, setPathname] = useState('');
 
-  const randomSeed = useMemo(() => Math.floor(Math.random() * 70) + 1, []);
-  const placeholderRemote = useMemo(
-    () => `https://i.pravatar.cc/150?img=${randomSeed}`,
-    [randomSeed]
-  );
-
+  // load user if any
   useEffect(() => {
     let mounted = true;
-    async function loadUser() {
+    (async () => {
       try {
-        if (!supabase) {
-          if (mounted) {
-            setUser(null);
-            setAvatarUri(placeholderRemote);
-          }
-          return;
-        }
-        if (supabase.auth && supabase.auth.getUser) {
-          const { data, error } = await supabase.auth.getUser();
-          if (error) {
-            if (mounted) {
-              setUser(null);
-              setAvatarUri(placeholderRemote);
-            }
-          } else {
-            const u = data?.user ?? null;
-            if (mounted) {
-              setUser(u);
-              const avatarFromUser =
-                u?.user_metadata?.avatar_url ??
-                u?.user_metadata?.avatar ??
-                u?.avatar_url ??
-                null;
-              setAvatarUri(avatarFromUser ?? placeholderRemote);
-            }
-          }
-        } else if (supabase.auth && supabase.auth.user) {
-          const u = supabase.auth.user();
-          if (mounted) {
-            setUser(u);
-            const avatarFromUser =
-              u?.user_metadata?.avatar_url ??
-              u?.user_metadata?.avatar ??
-              u?.avatar_url ??
-              null;
-            setAvatarUri(avatarFromUser ?? placeholderRemote);
-          }
-        } else {
-          if (mounted) {
-            setUser(null);
-            setAvatarUri(placeholderRemote);
-          }
-        }
+        const raw = await AsyncStorage.getItem('@thync_user');
+        if (!mounted) return;
+        setUser(raw ? JSON.parse(raw) : null);
       } catch (e) {
-        if (mounted) {
-          setUser(null);
-          setAvatarUri(placeholderRemote);
-        }
-      } finally {
-        if (mounted) setLoading(false);
+        console.warn('load user err', e);
       }
-    }
-    loadUser();
+    })();
     return () => { mounted = false; };
-  }, [supabase, placeholderRemote]);
+  }, []);
 
-  const onImageError = () => {
-    setAvatarUri(`https://i.pravatar.cc/150?u=fallback_${Date.now()}`);
+  // 안전하게 현재 경로 얻기: 우선 usePathname (expo-router) 시도 -> props.state fallback
+  useEffect(() => {
+    let mounted = true;
+    try {
+      const mod = require('expo-router');
+      const usePathname = mod && mod.usePathname;
+      if (typeof usePathname === 'function') {
+        const p = usePathname();
+        if (mounted) setPathname(p || '');
+        return () => { mounted = false; };
+      }
+    } catch (e) {
+      // ignore
+    }
+    // fallback: props.state
+    try {
+      const idx = props?.state?.index ?? 0;
+      const routeName = props?.state?.routes?.[idx]?.name ?? '';
+      if (mounted) setPathname(routeName ? `/${routeName}` : '');
+    } catch (e) {
+      if (mounted) setPathname('');
+    }
+    return () => { mounted = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props?.state]);
+
+  // active 판단: pathname이나 route name에 'projects' 포함되면 프로젝트 active
+  const isActive = (item) => {
+    if (!pathname) return false;
+    try {
+      const p = pathname.startsWith('/') ? pathname : `/${pathname}`;
+      // 예: '/projects', '/projects/ABC', '/projects?x=1' 등 대응
+      return p === item.path || p.startsWith(item.path + '/') || p.startsWith(item.path + '?');
+    } catch (e) {
+      return false;
+    }
   };
 
-  async function handleLogout() {
+  // 안전한 이동 함수
+  const go = async (item) => {
     try {
-      if (supabase && supabase.auth && supabase.auth.signOut) {
-        const { error } = await supabase.auth.signOut();
-        if (error) throw error;
-      }
-      Alert.alert('로그아웃', '정상적으로 로그아웃되었습니다.');
-      router.replace('/'); // 홈으로 이동 (파일 기반 경로)
+      await router.push(item.path);
+      try { props?.navigation?.closeDrawer?.(); } catch (_) {}
     } catch (e) {
-      Alert.alert('로그아웃 실패', e.message ?? String(e));
+      // fallback: navigation.navigate with route name (strip '/')
+      try {
+        const routeName = item.path === '/' ? 'index' : item.path.replace(/^\//,'').split('/')[0];
+        props?.navigation?.navigate?.(routeName);
+        props?.navigation?.closeDrawer?.();
+      } catch (e2) { console.warn('nav fallback err', e2); }
     }
-  }
+  };
 
-  // routeName: use router.push with absolute path
-  function go(routePath) {
-    // routePath 예: '/profile', '/projects', '/inventory', '/settings'
-    router.push(routePath);
-    navigation.closeDrawer?.();
-  }
+  const handleLogout = async () => {
+    Alert.alert('로그아웃', '로그아웃 하시겠습니까?', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '로그아웃', style: 'destructive',
+        onPress: async () => {
+          try {
+            await AsyncStorage.removeItem('@thync_user');
+            await AsyncStorage.removeItem('@thync_token');
+            try { props?.navigation?.closeDrawer?.(); } catch (_) {}
+            await router.replace('/login');
+          } catch (e) {
+            console.warn('logout err', e);
+          }
+        }
+      }
+    ]);
+  };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.safe, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 }]}>
       <View style={styles.header}>
-        {loading ? (
-          <ActivityIndicator />
-        ) : (
-          <>
-            <Image
-              source={avatarUri ? { uri: avatarUri } : { uri: placeholderRemote }}
-              style={styles.avatar}
-              onError={onImageError}
-            />
-            <View style={{ marginLeft: 12, flex: 1 }}>
-              <Text style={styles.name}>
-                {user?.email ? (user?.user_metadata?.full_name ?? user.email) : '게스트'}
-              </Text>
-              <Text style={styles.sub}>{user?.email ?? '로그인되지 않음'}</Text>
-            </View>
-          </>
-        )}
+        <View style={styles.logoBox}><Text style={styles.logoText}>T</Text></View>
+        <View style={styles.headText}>
+          <Text style={styles.brandText}>ThyncSE</Text>
+          {user ? <Text style={styles.userName}>{user.name ?? '사용자'}</Text> : <Text style={styles.userName}>로그인이 필요합니다</Text>}
+        </View>
       </View>
-
-      <View style={styles.divider} />
 
       <View style={styles.menu}>
-        <TouchableOpacity style={styles.menuItem} onPress={() => go('/profile')}>
-          <Entypo name="user" size={20} />
-          <Text style={styles.menuText}>내정보</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem} onPress={() => go('/projects')}>
-          <MaterialIcons name="folder" size={20} />
-          <Text style={styles.menuText}>프로젝트</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem} onPress={() => go('/inventory')}>
-          <MaterialIcons name="inventory" size={20} />
-          <Text style={styles.menuText}>재고관리</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem} onPress={() => go('/settings')}>
-          <MaterialIcons name="settings" size={20} />
-          <Text style={styles.menuText}>설정</Text>
-        </TouchableOpacity>
+        {NAV_ITEMS.map(item => {
+          const active = isActive(item);
+          return (
+            <TouchableOpacity key={item.key} style={[styles.item, active ? styles.itemActive : null]} onPress={() => go(item)}>
+              <View style={styles.icon}>{item.icon(active ? ORANGE : INACTIVE, 20)}</View>
+              <Text style={[styles.label, active ? { color: ORANGE, fontWeight: '800' } : null]}>{item.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
-      <View style={{ flex: 1 }} />
-
-      <View style={styles.footer}>
+      <View style={styles.bottom}>
+        <Text style={styles.version}>v1.0.0</Text>
         <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <MaterialIcons name="logout" size={20} color="#fff" />
           <Text style={styles.logoutText}>로그아웃</Text>
         </TouchableOpacity>
-        <Text style={styles.version}>v1.0.0</Text>
       </View>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  avatar: { width: 64, height: 64, borderRadius: 12, backgroundColor: '#eee' },
-  name: { fontSize: 16, fontWeight: '700' },
-  sub: { color: '#666', marginTop: 2, fontSize: 12 },
-  divider: { height: 1, backgroundColor: '#f0f0f0', marginHorizontal: 12 },
-  menu: { marginTop: 8 },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-  },
-  menuText: { marginLeft: 14, fontSize: 15 },
-  footer: {
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  logoutBtn: {
-    backgroundColor: '#e74c3c',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  logoutText: { color: '#fff', marginLeft: 8, fontWeight: '700' },
-  version: { marginTop: 8, color: '#999', textAlign: 'center' },
-});
+const styles = {
+  safe: { flex: 1, backgroundColor: '#fff' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
+  logoBox: { width: 48, height: 48, borderRadius: 10, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  logoText: { color: '#fff', fontWeight: '900', fontSize: 18 },
+  headText: { flex: 1 },
+  brandText: { fontSize: 18, fontWeight: '800' },
+  userName: { color: '#666', marginTop: 4 },
+
+  menu: { paddingHorizontal: 8, marginTop: 8, flex: 1 },
+  item: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 10, borderRadius: 10, marginBottom: 6 },
+  itemActive: { backgroundColor: 'rgba(255,122,24,0.08)' },
+  icon: { width: 36, alignItems: 'center', marginRight: 8 },
+  label: { fontSize: 15, color: INACTIVE },
+
+  bottom: { paddingHorizontal: 16, paddingBottom: 8, paddingTop: 8 },
+  version: { color: '#999', fontSize: 12, marginBottom: 8 },
+  logoutBtn: { backgroundColor: ORANGE, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  logoutText: { color: '#fff', fontWeight: '800' }
+};
