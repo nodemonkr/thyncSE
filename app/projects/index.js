@@ -1,5 +1,7 @@
 // app/projects/index.js
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -13,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import ProjectCard from '../../components/ProjectCard';
 import ProjectModal from '../../components/ProjectModal';
-import { supabase } from '../../lib/api/supabaseClient'; // 경로 프로젝트 루트 기준
+import { supabase } from '../../lib/api/supabaseClient'; // 경로: 프로젝트 루트 기준
 
 const ORANGE = '#ff7a18';
 
@@ -31,12 +33,14 @@ export default function ProjectsScreen() {
   const [modalVisible, setModalVisible] = useState(false);
 
   const LOCAL_KEY = '@thync_projects_v1';
+  const router = useRouter();
 
   const loadLocal = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(LOCAL_KEY);
       return raw ? JSON.parse(raw) : [];
     } catch (e) {
+      console.warn('loadLocal err', e);
       return [];
     }
   }, []);
@@ -53,7 +57,10 @@ export default function ProjectsScreen() {
     setLoading(true);
     try {
       if (supabase) {
-        const { data, error } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
+        const { data, error } = await supabase
+          .from('projects')
+          .select('*')
+          .order('created_at', { ascending: false });
         if (error) {
           console.warn('supabase fetch err', error);
           const local = await loadLocal();
@@ -64,7 +71,7 @@ export default function ProjectsScreen() {
           await saveLocal(data || []);
         }
       } else {
-        // fallback
+        // fallback to local storage
         const local = await loadLocal();
         setProjects(local);
       }
@@ -80,6 +87,13 @@ export default function ProjectsScreen() {
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  // 화면이 다시 focus 될 때(다른 화면에서 돌아왔을 때) 목록 갱신
+  useFocusEffect(
+    useCallback(() => {
+      loadProjects();
+    }, [loadProjects])
+  );
 
   async function createProject(payload) {
     // payload: {name, wards, beds, gateways}
@@ -103,8 +117,11 @@ export default function ProjectsScreen() {
 
     if (supabase) {
       const { data, error } = await supabase.from('projects').insert([newProject]).select().single();
-      if (error) throw error;
-      // refresh list
+      if (error) {
+        console.warn('supabase insert err', error);
+        throw error;
+      }
+      // refresh list from server
       await loadProjects();
     } else {
       const next = [newProject, ...projects];
@@ -138,11 +155,29 @@ export default function ProjectsScreen() {
     ]);
   }
 
+  const onPressCard = (item) => {
+    // file-based routing: app/projects/[code].js 로 이동
+    // item.code 가 존재해야 함
+    if (!item || !item.code) {
+      Alert.alert('오류', '해당 프로젝트의 코드가 없습니다.');
+      return;
+    }
+    router.push(`/projects/${item.code}`);
+  };
+
   return (
     <SafeAreaView style={{ flex: 1 }}>
       <View style={styles.header}>
-        <Text style={styles.hTitle}>프로젝트</Text>
-        <Text style={styles.hSub}>진행중인 프로젝트 목록을 관리하세요</Text>
+        <View>
+          <Text style={styles.hTitle}>프로젝트</Text>
+          <Text style={styles.hSub}>진행중인 프로젝트 목록을 관리하세요</Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity style={styles.refreshBtn} onPress={() => loadProjects()}>
+            <Text style={{ color: '#fff', fontWeight: '700' }}>새로고침</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
@@ -156,7 +191,11 @@ export default function ProjectsScreen() {
           data={projects}
           keyExtractor={(it) => it.code}
           renderItem={({ item }) => (
-            <ProjectCard item={item} onPress={() => {/* nav to project detail if exists */}} onDelete={deleteProject} />
+            <ProjectCard
+              item={item}
+              onPress={() => onPressCard(item)}
+              onDelete={deleteProject}
+            />
           )}
           contentContainerStyle={{ paddingVertical: 12 }}
         />
@@ -173,7 +212,7 @@ export default function ProjectsScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: { padding: 16, paddingBottom: 8 },
+  header: { padding: 16, paddingBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   hTitle: { fontSize: 22, fontWeight: '800' },
   hSub: { color: '#666', marginTop: 4 },
   fab: {
@@ -190,4 +229,11 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   fabText: { color: '#fff', fontWeight: '800' },
+  refreshBtn: {
+    backgroundColor: '#1976d2',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginLeft: 12,
+  }
 });
